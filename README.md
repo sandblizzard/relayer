@@ -56,5 +56,6 @@ BOUNTY_CREATOR can always `cancel_bounty` to get the funds out.
 - [x] Use structs from Bounty program
 - [ ] Implement PR flow
 - [x] Implement account verification
-- [ ] Write Bounty
-- [ ] Implement JPEG module for creation of new NFT JPEGS
+- [ ] Integrate with bounty program
+- [ ] Deploy executable with terraform or pulumi
+- [ ] (Implement JPEG module for creation of new NFT JPEGS)
