@@ -14,6 +14,9 @@ pub enum SBError {
     #[error("{0}  Github comments not found. Reason {1}")]
     CommentNotFound(String, String),
 
+    #[error("{0} Failed to comment. Reason {1}")]
+    FailedToComment(String, String),
+
     #[error("could not create signing link. Reson:{0}")]
     CouldNotGenerateSigningLink(String),
 
@@ -46,6 +49,9 @@ pub enum SBError {
 
     #[error("bounty allready exists")]
     BountyExists,
+
+    #[error("bounty was not found in the state")]
+    BountyDoesNotExistInState,
 
     #[error("key {0} not found in environment")]
     KeyNotFound(String),
@@ -82,6 +88,9 @@ pub enum SBError {
 
     #[error("{0} Could not find user {1} among minted NFTs")]
     CouldNotFindUser(String, String),
+
+    #[error("{0} Could not convert {1} to {2}. Cause {3}")]
+    CouldNotConvert(String, String, String, String),
 }
 
 /// get_key_from_env
@@ -96,11 +105,12 @@ pub fn get_key_from_env(key: &str) -> Result<String, SBError> {
     match dotenv::from_path(&path) {
         Ok(_) => (),
         Err(err) => {
+            log::warn!("get_key_from_env: could not get key {}", key);
             return Err(SBError::CouldNotGetPath(format!(
                 "path={:?}, cause: {}",
                 &path,
                 err.to_string()
-            )))
+            )));
         }
     }
 

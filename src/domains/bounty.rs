@@ -2,37 +2,9 @@ use std::ops::Mul;
 
 use regex::Regex;
 
+use crate::bounty::Bounty;
+
 use super::utils::SBError;
-
-pub struct Bounty {
-    pub amount: Option<u64>,
-    pub token_name: Option<String>,
-    pub creator: String,
-    pub id: u64,
-    pub solvers: Option<Vec<String>>,
-}
-
-impl Bounty {
-    /// try_create_bounty will try to store the
-    /// bounty in the program
-    pub fn try_create_bounty(&self) -> Result<(), SBError> {
-        log::info!("[bounty] Try create bounty with id={}", self.id);
-
-        // if bounty is new then
-        Ok(())
-    }
-
-    /// try_complete_bounty will complete a bounty if solvers
-    /// were specified, if not it is deemed cancelled
-    pub fn try_complete_bounty(&self) -> Result<(), SBError> {
-        log::info!(
-            "[bounty] Try to complete bounty with id={}, for solvers: {:?}",
-            self.id,
-            self.solvers.as_ref().unwrap()
-        );
-        Ok(())
-    }
-}
 
 /// get_solvers takes the issue close text and finds the mentioned users
 pub fn get_solvers(creator: &str, text: &str, id: &u64) -> Result<Bounty, SBError> {
@@ -58,6 +30,7 @@ pub fn get_solvers(creator: &str, text: &str, id: &u64) -> Result<Bounty, SBErro
         creator: creator.to_string(),
         id: *id,
         solvers: Some(usernames),
+        state: "not_started".to_string(),
     })
 }
 
@@ -115,6 +88,7 @@ pub fn get_bounty(creator: &str, text: &str, id: &u64) -> Result<Bounty, SBError
             creator: creator.to_string(),
             id: *id,
             solvers: None,
+            state: "not_started".to_string(),
         })
     }
 }

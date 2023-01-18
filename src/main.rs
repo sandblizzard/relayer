@@ -1,7 +1,7 @@
 pub mod domains;
 pub mod external;
 pub mod jobs;
-
+pub mod bounty;
 use std::{thread, time};
 
 use anchor_client::anchor_lang::Result;
