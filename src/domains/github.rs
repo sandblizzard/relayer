@@ -141,14 +141,14 @@ impl Github {
             Some(body) => body,
             None => return Ok(false),
         };
-        let sb_bounty_domain = get_key_from_env("SANDBLIZZARD_BOUNTY_DOMAIN")?;
+        let sb_bounty_domain = get_key_from_env("SANDBLIZZARD_URL")?;
         Ok(comment_body.contains(&sb_bounty_domain))
     }
 
     pub fn get_signing_link(&self, issue_id: &u64) -> Result<String, SBError> {
-        let sb_bounty_domain = get_key_from_env("SANDBLIZZARD_BOUNTY_DOMAIN")?;
+        let sb_bounty_domain = get_key_from_env("SANDBLIZZARD_URL")?;
         Ok(format!(
-            "Create bounty by signing: [Transaction](https://{}/new?owner={},repo={},id={})",
+            "Create bounty by signing: [Transaction]({}/create_bounty?owner={},repo={},id={})",
             sb_bounty_domain, self.domain.owner, self.domain.sub_domain_name, issue_id
         ))
     }
@@ -176,7 +176,7 @@ impl Github {
         let bounty_status = format!("Bounty status {}", bounty.state);
         return match gh
             .issues(&self.domain.owner, &self.domain.sub_domain_name)
-            .create_comment(*issue_number as u64, bounty_status)
+            .create_comment(*issue_number, bounty_status)
             .await
         {
             Ok(comment) => {
@@ -208,7 +208,7 @@ impl Github {
         );
         return match gh
             .issues(&self.domain.owner, &self.domain.sub_domain_name)
-            .create_comment(*issue_number as u64, self.get_signing_link(issue_id)?)
+            .create_comment(*issue_number, self.get_signing_link(issue_id)?)
             .await
         {
             Ok(comment) => {
