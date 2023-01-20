@@ -1,7 +1,7 @@
+use anchor_client::{Client, Program};
 use async_trait::async_trait;
-use std::{
-    result::Result,
-};
+use std::{rc::Rc, result::Result, sync::Arc};
+use tokio::sync::Mutex;
 
 use super::{github::Github, utils::SBError};
 
@@ -22,8 +22,8 @@ pub enum DomainType {
 
 #[async_trait]
 pub trait DomainHandler {
-    async fn handle(&self) -> Result<(), SBError>;
     fn name(&self) -> String;
+    async fn handle(&self) -> Result<(), SBError>;
 }
 
 impl Domain {

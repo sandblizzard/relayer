@@ -1,23 +1,23 @@
-use std::result::Result;
+use std::{fmt::format, rc::Rc, result::Result, sync::Arc};
 
 use super::{
     utils::{get_key_from_env, SBError},
     Domain, DomainHandler,
 };
-use crate::{
-    bounty::Bounty,
-    domains::bounty::{get_bounty, get_solvers},
-};
+use crate::bounty_wrapper::{get_bounty, get_solvers, is_bounty_created, BountyWrapped};
+use anchor_client::{Client, Program};
 use async_trait::async_trait;
+use bounty;
 use octocrab::{
     issues::IssueHandler,
     models::{
         issues::{Comment, Issue},
-        IssueState,
+        IssueId, IssueState,
     },
     params::apps::CreateInstallationAccessToken,
     *,
 };
+use tokio::sync::Mutex;
 pub struct Github {
     pub domain: Domain,
 }
@@ -70,7 +70,7 @@ pub async fn get_connection() -> Result<Octocrab, SBError> {
 }
 
 impl Github {
-    async fn try_get_bounty_from_issue(&self, issue: &Issue) -> Result<Bounty, SBError> {
+    async fn try_get_bounty_from_issue(&self, issue: &Issue) -> Result<BountyWrapped, SBError> {
         let issue_body = match issue.body.as_ref() {
             Some(body) => body,
             None => {
@@ -115,7 +115,7 @@ impl Github {
             Some(comment) => comment,
             None => {
                 return Err(SBError::CommentNotFound(
-                    "issues".to_string(),
+                    "closed issue".to_string(),
                     "".to_string(),
                 ))
             }
@@ -125,7 +125,7 @@ impl Github {
             Some(comment) => comment,
             None => {
                 return Err(SBError::CommentNotFound(
-                    "issues".to_string(),
+                    "closed body issue".to_string(),
                     "Comment body not found".to_string(),
                 ))
             }
@@ -145,11 +145,21 @@ impl Github {
         Ok(comment_body.contains(&sb_bounty_domain))
     }
 
-    pub fn get_signing_link(&self, issue_id: &u64) -> Result<String, SBError> {
+    pub fn get_signing_link(
+        &self,
+        issue_id: &u64,
+        issue_number: &i64,
+        bounty_amount: &f64,
+    ) -> Result<String, SBError> {
         let sb_bounty_domain = get_key_from_env("SANDBLIZZARD_URL")?;
+
+        let referrer = format!(
+            "https://github.com/{}/{}/issues/{}",
+            self.domain.owner, self.domain.sub_domain_name, issue_number
+        );
         Ok(format!(
-            "Create bounty by signing: [Transaction]({}/create_bounty?owner={},repo={},id={})",
-            sb_bounty_domain, self.domain.owner, self.domain.sub_domain_name, issue_id
+            "Create bounty by signing: [Transaction]({}/create_bounty?referrer={}&domain={}&subDomain={}&id={}&bountyAmount={})",
+            sb_bounty_domain,referrer, self.domain.owner, self.domain.sub_domain_name, issue_id,bounty_amount
         ))
     }
 
@@ -166,14 +176,14 @@ impl Github {
         gh: &Octocrab,
         issue_number: &i64,
         issue_id: &u64,
-        bounty: &Bounty,
+        bounty: &bounty::state::Bounty,
     ) -> Result<(), SBError> {
         log::info!(
             "[relayer] try to post bounty statu for issue_id: {} ",
             issue_id
         );
 
-        let bounty_status = format!("Bounty status {}", bounty.state);
+        let bounty_status = format!("Bounty status: **{}**", bounty.state.to_uppercase());
         return match gh
             .issues(&self.domain.owner, &self.domain.sub_domain_name)
             .create_comment(*issue_number, bounty_status)
@@ -201,14 +211,18 @@ impl Github {
         gh: &Octocrab,
         issue_number: &i64,
         issue_id: &u64,
+        bounty_amount: &f64,
     ) -> Result<(), SBError> {
         log::info!(
-            "[relayer] try to create signing link for issue_id: {} ",
+            "[relayer] try to create signing link for issue id: {} ",
             issue_id
         );
         return match gh
             .issues(&self.domain.owner, &self.domain.sub_domain_name)
-            .create_comment(*issue_number, self.get_signing_link(issue_id)?)
+            .create_comment(
+                *issue_number,
+                self.get_signing_link(issue_id, issue_number, bounty_amount)?,
+            )
             .await
         {
             Ok(comment) => {
@@ -237,19 +251,33 @@ impl Github {
 
         let gh = get_connection().await?;
         let issue_handler = gh.issues(&self.domain.owner, &self.domain.sub_domain_name);
-        let mut issues = match issue_handler.list().state(params::State::All).send().await {
+        let mut issues = match issue_handler
+            .list()
+            .state(params::State::All)
+            .per_page(100)
+            .send()
+            .await
+        {
             Ok(val) => val,
             Err(err) => return Err(SBError::FailedToGetIssue(err.to_string())),
         };
+        log::info!(
+            "issues: {:?}",
+            issues
+                .clone()
+                .into_iter()
+                .map(|iss| iss.id)
+                .collect::<Vec<IssueId>>()
+        );
 
         loop {
-            for issue in &issues {
+            for issue in &issues.take_items() {
                 // get Status of Issue
                 // 1. Open - try create bounty
                 // 2. Closed -
                 //  - pay out bounty if mentioned users
                 //  - close bounty if no one mentioned
-
+                log::info!("[relayer] issue {}, issue state {}", issue.id, issue.state,);
                 if issue.state.eq("open") {
                     log::info!(
                         "[relayer] found issue id={}, isOpen= {}",
@@ -269,7 +297,7 @@ impl Github {
                         .send()
                         .await
                         .map_err(|err| {
-                            SBError::CommentsNotFound("issues".to_string(), err.to_string())
+                            SBError::CommentsNotFound("open issues".to_string(), err.to_string())
                         })?
                         .take_items();
 
@@ -277,21 +305,21 @@ impl Github {
                         .iter()
                         .filter(|comment| is_relayer_login(&comment.user.login).unwrap());
 
-                    match bounty_proposed_in_issue.is_bounty_created() {
-                        Ok(_) => {
+                    match is_bounty_created(
+                        &self.domain.owner,
+                        &self.domain.sub_domain_name,
+                        &issue.id.0,
+                    ) {
+                        Ok(bounty) => {
                             // Bounty exists
                             // check if posted status
+                            log::info!("Issues: found created bounty: {:?}", bounty);
                             let has_posted_status = &relayer_comments_iter
                                 .any(|comment| self.contains_bounty_status(&comment));
                             if !has_posted_status {
                                 // post status
-                                self.post_bounty_status(
-                                    &gh,
-                                    &issue.number,
-                                    &issue.id.0,
-                                    &bounty_proposed_in_issue,
-                                )
-                                .await?;
+                                self.post_bounty_status(&gh, &issue.number, &issue.id.0, &bounty)
+                                    .await?;
                             }
                             log::debug!(
                                 "issues: bounty for issue={} exists and status has been posted={} ",
@@ -300,14 +328,24 @@ impl Github {
                             );
                         }
                         Err(err) => {
+                            log::info!(
+                                "issue {} not created. Cause {}",
+                                issue.id.0,
+                                err.to_string()
+                            );
                             let has_posted_signing_link = &relayer_comments_iter.any(|comment| {
                                 self.comment_contains_signing_link(&comment).unwrap()
                             });
                             // bounty don't exist
                             if !has_posted_signing_link {
                                 // if bounty is new then generate signing link
-                                self.post_signing_link(&gh, &issue.number, &issue.id.0)
-                                    .await?;
+                                self.post_signing_link(
+                                    &gh,
+                                    &issue.number,
+                                    &issue.id,
+                                    &bounty_proposed_in_issue.amount.unwrap(),
+                                )
+                                .await?;
                             }
                             log::debug!("issues: bounty for issue={} does not exists and signing link has been posted={} ",issue.id.0,has_posted_signing_link);
                         }
@@ -315,6 +353,7 @@ impl Github {
                 } else {
                     // -> If closed -> try to complete bounty
 
+                    log::info!("Issues: issue closed, try to complete bounty");
                     // get the top 150 comments on the issue
                     let page_comments = issue_handler
                         .list_comments(issue.number as u64)
@@ -322,19 +361,55 @@ impl Github {
                         .send()
                         .await
                         .map_err(|err| {
-                            SBError::CommentsNotFound("issues".to_string(), err.to_string())
+                            SBError::CommentsNotFound("closed issues".to_string(), err.to_string())
                         })?
                         .take_items();
 
                     // try to get the comment body. If no closing comment -> return
-                    let comment_body = self.try_get_closing_comment(issue, page_comments).await?;
+                    let comment_body = match self
+                        .try_get_closing_comment(issue, page_comments)
+                        .await
+                    {
+                        Ok(body) => body,
+                        Err(err) => {
+                            log::warn!("Could not get closing comment. Cause: {}", err.to_string());
+                            continue;
+                        }
+                    };
+                    let bounty_mint = match is_bounty_created(
+                        &self.domain.owner,
+                        &self.domain.sub_domain_name,
+                        &issue.id.0,
+                    ) {
+                        Ok(bounty) => bounty,
+                        Err(err) => {
+                            log::info!(
+                                "Could not get issue for {} with id {}. Cause {}. Continuing to next issue...",
+                                issue.url,
+                                issue.id.0,
+                                err.to_string()
+                            );
+                            continue;
+                        }
+                    };
 
-                    let bounty =
-                        get_solvers(&issue.user.id.to_string(), &comment_body, &issue.id).unwrap();
+                    let bounty = get_solvers(
+                        &issue.user.id.to_string(),
+                        &comment_body,
+                        &issue.id,
+                        &bounty_mint.mint,
+                    )
+                    .await
+                    .unwrap();
 
-                    bounty.try_complete_bounty().map_err(|err| {
-                        SBError::FailedToCompleteBounty("issues".to_string(), err.to_string())
-                    })?;
+                    bounty
+                        .try_complete_bounty(
+                            &self.domain.owner,
+                            &self.domain.sub_domain_name,
+                            &issue.id.0,
+                            &bounty_mint.mint,
+                        )
+                        .await?;
                 }
             }
 

@@ -1,4 +1,3 @@
-pub mod bounty;
 pub mod domains;
 pub mod github;
 pub mod utils;

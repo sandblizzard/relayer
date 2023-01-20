@@ -50,8 +50,11 @@ pub enum SBError {
     #[error("bounty allready exists")]
     BountyExists,
 
-    #[error("bounty was not found in the state")]
-    BountyDoesNotExistInState,
+    #[error("bounty {0} was not found in the state. Cause {1}")]
+    BountyDoesNotExistInState(String, String),
+
+    #[error("Failed to load keypair from file. Cause {0}")]
+    FailedToLoadKeypair(String),
 
     #[error("key {0} not found in environment")]
     KeyNotFound(String),
@@ -91,6 +94,9 @@ pub enum SBError {
 
     #[error("{0} Could not convert {1} to {2}. Cause {3}")]
     CouldNotConvert(String, String, String, String),
+
+    #[error("{0} Could not get env key {1}. Cause {2}")]
+    CouldNotGetEnvKey(String, String, String),
 }
 
 /// get_key_from_env

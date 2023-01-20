@@ -28,31 +28,31 @@ pub struct CreateUnderdogCollection {
 
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
 pub struct UnderdogNFTs {
-    results: Vec<UnderdogNFT>,
-    page: u64,
-    limit: u64,
+    pub results: Vec<UnderdogNFT>,
+    pub page: u64,
+    pub limit: u64,
     #[serde(rename = "totalPages")]
-    total_pages: u64,
+    pub total_pages: u64,
     #[serde(rename = "totalResults")]
-    total_results: u64,
+    pub total_results: u64,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub struct UnderdogNFT {
-    name: String,
-    description: String,
-    image: String,
-    attributes: SandblizzardAttributes,
+    pub name: String,
+    pub description: String,
+    pub image: String,
+    pub attributes: SandblizzardAttributes,
     #[serde(rename = "managed", default = "default_bool")]
-    managed: bool,
+    pub managed: bool,
     #[serde(rename = "ownerAddress")]
-    owner_address: String,
+    pub owner_address: String,
     #[serde(rename = "collectionAddress")]
-    collection_address: String,
+    pub collection_address: String,
     #[serde(rename = "mintAddress", skip_serializing_if = "Option::is_none")]
-    mint_address: Option<String>,
+    pub mint_address: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    status: Option<String>,
+    pub status: Option<String>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
