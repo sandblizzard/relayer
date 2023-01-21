@@ -59,6 +59,9 @@ pub enum SBError {
     #[error("key {0} not found in environment")]
     KeyNotFound(String),
 
+    #[error("could not get githib connection. Cause {0}")]
+    FailedToGetGithubInstallations(String),
+
     /// PULLS
     #[error("can't get pull requests. Reason {0}")]
     FailedToFetchPulls(String),

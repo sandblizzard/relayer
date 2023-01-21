@@ -14,7 +14,7 @@ use anchor_client::{
     },
     *,
 };
-use anchor_spl::*;
+use anchor_spl::{token::TokenAccount, *};
 use regex::Regex;
 use spl_associated_token_account::{instruction::create_associated_token_account, *};
 
@@ -31,7 +31,40 @@ pub struct BountyWrapped {
     pub state: String,
 }
 
-pub fn is_bounty_created(
+pub fn get_protocol() -> Result<bounty::state::Protocol, SBError> {
+    let (program, cluster) = get_bounty_client()?;
+    let protocol =
+        Pubkey::find_program_address(&[bounty::utils::BOUNTY_SEED.as_bytes()], &bounty::id());
+    let protocol = match program.account::<bounty::state::Protocol>(protocol.0) {
+        Ok(bounty) => bounty,
+        Err(err) => {
+            return Err(SBError::BountyDoesNotExistInState(
+                protocol.0.to_string(),
+                err.to_string(),
+            ))
+        }
+    };
+
+    Ok(protocol)
+}
+
+pub fn get_escrow(bounty: &Pubkey) -> Result<TokenAccount, SBError> {
+    let (program, cluster) = get_bounty_client()?;
+    let protocol = Pubkey::find_program_address(&[bounty.to_bytes().as_ref()], &bounty::id());
+    let escrow = match program.account::<TokenAccount>(protocol.0) {
+        Ok(bounty) => bounty,
+        Err(err) => {
+            return Err(SBError::BountyDoesNotExistInState(
+                protocol.0.to_string(),
+                err.to_string(),
+            ))
+        }
+    };
+
+    Ok(escrow)
+}
+
+pub fn get_bounty(
     domain: &str,
     sub_domain: &str,
     issue_id: &u64,
@@ -118,7 +151,7 @@ impl BountyWrapped {
         sub_domain: &str,
         issue_id: &u64,
         bounty_mint: &Pubkey,
-    ) -> Result<(), SBError> {
+    ) -> Result<bounty::state::Bounty, SBError> {
         log::info!(
             "[bounty] Try to complete bounty with id={}, for solvers: {:?}",
             self.id,
@@ -134,6 +167,7 @@ impl BountyWrapped {
 
         let protocol =
             Pubkey::find_program_address(&[bounty::utils::BOUNTY_SEED.as_bytes()], &bounty::id());
+
         let relayer = Pubkey::find_program_address(
             &[
                 bounty::utils::BOUNTY_SEED.as_bytes(),
@@ -185,18 +219,29 @@ impl BountyWrapped {
             data: complete_bounty_data.data(),
         };
 
-        match program.request().instruction(complete_bounty_ix).send() {
-            Ok(bounty) => bounty,
+        let bounty = match program.request().instruction(complete_bounty_ix).send() {
+            Ok(bounty) => get_bounty(domain, sub_domain, issue_id).unwrap(),
             Err(err) => {
-                log::info!("Failed to complete bounty: {:?}", err);
+                let protocol_data = get_protocol().unwrap();
+                let escrow = get_escrow(&bounty_pda.0).unwrap();
+                log::info!(
+                    "Failed to complete bounty: {:?}, protocol: {}, fee collector: {}, protocol.fee_collector {}, bounty: {}, mint: {}, escrow balance {}",
+                    err,
+                    protocol.0.to_string(),
+                    fee_collector.to_string(),
+                    protocol_data.fee_collector.to_string(),
+                    bounty_pda.0.to_string(),
+                    bounty_mint.to_string(),
+                    escrow.amount,
+                );
                 return Err(SBError::FailedToCompleteBounty(
                     "try complete bounty".to_string(),
                     err.to_string(),
                 ));
             }
         };
-
-        Ok(())
+        log::info!("Completed Bounty");
+        Ok(bounty)
     }
 }
 
@@ -255,7 +300,7 @@ pub async fn get_solvers(
 /// the body of a potential bounty item
 ///
 /// Assume bounty in the form $bonk:10.10$
-pub fn get_bounty(creator: &str, text: &str, id: &u64) -> Result<BountyWrapped, SBError> {
+pub fn get_bounty_wrapper(creator: &str, text: &str, id: &u64) -> Result<BountyWrapped, SBError> {
     let re = Regex::new(r"\$(.+)\$").unwrap();
     let captures = match re.captures(text) {
         Some(bounty) => bounty,
@@ -309,7 +354,7 @@ pub fn get_bounty(creator: &str, text: &str, id: &u64) -> Result<BountyWrapped, 
 #[cfg(test)]
 mod test {
 
-    use crate::bounty_wrapper::get_solvers;
+    use crate::bounty_wrapper::{get_bounty_wrapper, get_solvers};
 
     use super::get_bounty;
 
@@ -323,7 +368,7 @@ mod test {
 
         let owner = "123";
         let id = 1;
-        let bounty = get_bounty(owner, text, &id).unwrap();
+        let bounty = get_bounty_wrapper(owner, text, &id).unwrap();
         assert_eq!(bounty.amount.unwrap(), 10.);
         assert_eq!(bounty.creator, owner);
     }

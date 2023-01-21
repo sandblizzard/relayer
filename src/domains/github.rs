@@ -4,7 +4,7 @@ use super::{
     utils::{get_key_from_env, SBError},
     Domain, DomainHandler,
 };
-use crate::bounty_wrapper::{get_bounty, get_solvers, is_bounty_created, BountyWrapped};
+use crate::bounty_wrapper::{get_bounty, get_bounty_wrapper, get_solvers, BountyWrapped};
 use anchor_client::{Client, Program};
 use async_trait::async_trait;
 use bounty;
@@ -53,7 +53,10 @@ pub async fn get_connection() -> Result<Octocrab, SBError> {
     let key = jsonwebtoken::EncodingKey::from_rsa_pem(github_key.as_bytes()).unwrap();
     let token = octocrab::auth::create_jwt(app_id, &key).unwrap();
     let gh = Octocrab::builder().personal_token(token).build().unwrap();
-    let installations = gh.apps().installations().send().await.unwrap().take_items();
+    let installations = match gh.apps().installations().send().await {
+        Ok(mut res) => res.take_items(),
+        Err(err) => return Err(SBError::FailedToGetGithubInstallations(err.to_string())),
+    };
     let access_token = CreateInstallationAccessToken::default();
 
     let access: models::InstallationToken = gh
@@ -81,13 +84,18 @@ impl Github {
         };
 
         // index the bounty information
-        let bounty = match get_bounty(&issue.user.id.to_string(), issue_body, &issue.id.0) {
+        let bounty = match get_bounty_wrapper(&issue.user.id.to_string(), issue_body, &issue.id.0) {
             Ok(bounty) => bounty,
             Err(err) => return Err(SBError::FailedToFindBounty(err.to_string())),
         };
 
         Ok(bounty)
     }
+
+    /// try_get_sandblizzard confirmation
+    ///
+    /// when an issue is closed and the app has completed the
+    /// bounty then a message is emitted
 
     /// try_get_closing_comment
     ///
@@ -163,12 +171,42 @@ impl Github {
         ))
     }
 
-    pub fn contains_bounty_status(&self, comment: &Comment) -> bool {
+    pub fn contains_bounty_status(&self, comment: &Comment, bounty_status: &str) -> bool {
         let comment_body = match &comment.body {
             Some(body) => body,
             None => return false,
         };
-        comment_body.contains("status")
+        comment_body.contains(bounty_status)
+    }
+
+    pub fn create_bounty_status_text(
+        &self,
+        bounty: &bounty::state::Bounty,
+    ) -> Result<String, SBError> {
+        Ok(format!(
+            "Bounty status: **{}**",
+            bounty.state.to_uppercase()
+        ))
+    }
+
+    pub async fn try_post_bounty_status(
+        &self,
+        gh: &Octocrab,
+        issue_number: &i64,
+        issue_id: &u64,
+        bounty: &bounty::state::Bounty,
+        comment: &Comment,
+    ) -> Result<(), SBError> {
+        let bounty_status = self.create_bounty_status_text(bounty)?;
+        log::info!("Bounty status {} for {}", bounty_status, issue_number);
+
+        if self.contains_bounty_status(comment, &bounty_status) {
+            return Ok(());
+        } else {
+            log::info!("Post bounty status {} for {}", bounty_status, issue_number);
+            self.post_bounty_status(gh, issue_number, issue_id, bounty)
+                .await
+        }
     }
 
     pub async fn post_bounty_status(
@@ -183,7 +221,7 @@ impl Github {
             issue_id
         );
 
-        let bounty_status = format!("Bounty status: **{}**", bounty.state.to_uppercase());
+        let bounty_status = self.create_bounty_status_text(bounty)?;
         return match gh
             .issues(&self.domain.owner, &self.domain.sub_domain_name)
             .create_comment(*issue_number, bounty_status)
@@ -285,7 +323,7 @@ impl Github {
                         issue.state.eq("open"),
                     );
 
-                    /// get bounty if proposed in issue
+                    // get bounty if proposed in issue
                     let bounty_proposed_in_issue = self.try_get_bounty_from_issue(&issue).await?;
 
                     // Check the status of the bounty
@@ -305,7 +343,7 @@ impl Github {
                         .iter()
                         .filter(|comment| is_relayer_login(&comment.user.login).unwrap());
 
-                    match is_bounty_created(
+                    match get_bounty(
                         &self.domain.owner,
                         &self.domain.sub_domain_name,
                         &issue.id.0,
@@ -314,18 +352,11 @@ impl Github {
                             // Bounty exists
                             // check if posted status
                             log::info!("Issues: found created bounty: {:?}", bounty);
-                            let has_posted_status = &relayer_comments_iter
-                                .any(|comment| self.contains_bounty_status(&comment));
-                            if !has_posted_status {
-                                // post status
-                                self.post_bounty_status(&gh, &issue.number, &issue.id.0, &bounty)
-                                    .await?;
+
+                            // don't do anything if bounty is closed
+                            if (bounty.state.eq("completed")) {
+                                log::info!("Issues: bounty created bounty: {:?}", bounty);
                             }
-                            log::debug!(
-                                "issues: bounty for issue={} exists and status has been posted={} ",
-                                issue.id.0,
-                                has_posted_status
-                            );
                         }
                         Err(err) => {
                             log::info!(
@@ -352,8 +383,28 @@ impl Github {
                     };
                 } else {
                     // -> If closed -> try to complete bounty
+                    log::info!(
+                        "Issues: issue closed, try to complete bounty for {}",
+                        issue.url
+                    );
 
-                    log::info!("Issues: issue closed, try to complete bounty");
+                    let bounty = match get_bounty(
+                        &self.domain.owner,
+                        &self.domain.sub_domain_name,
+                        &issue.id.0,
+                    ) {
+                        Ok(bounty) => bounty,
+                        Err(err) => {
+                            log::info!(
+                                "Could not get issue for {} with id {}. Cause {}. Continuing to next issue...",
+                                issue.url,
+                                issue.id.0,
+                                err.to_string()
+                            );
+                            break;
+                        }
+                    };
+
                     // get the top 150 comments on the issue
                     let page_comments = issue_handler
                         .list_comments(issue.number as u64)
@@ -373,42 +424,63 @@ impl Github {
                         Ok(body) => body,
                         Err(err) => {
                             log::warn!("Could not get closing comment. Cause: {}", err.to_string());
-                            continue;
-                        }
-                    };
-                    let bounty_mint = match is_bounty_created(
-                        &self.domain.owner,
-                        &self.domain.sub_domain_name,
-                        &issue.id.0,
-                    ) {
-                        Ok(bounty) => bounty,
-                        Err(err) => {
-                            log::info!(
-                                "Could not get issue for {} with id {}. Cause {}. Continuing to next issue...",
-                                issue.url,
-                                issue.id.0,
-                                err.to_string()
-                            );
-                            continue;
+                            break;
                         }
                     };
 
-                    let bounty = get_solvers(
+                    // FIXME: don't throw error, match and log
+                    let bounty_wrapped = get_solvers(
                         &issue.user.id.to_string(),
                         &comment_body,
                         &issue.id,
-                        &bounty_mint.mint,
+                        &bounty.mint,
                     )
                     .await
                     .unwrap();
 
-                    bounty
+                    let updated_bounty = bounty_wrapped
                         .try_complete_bounty(
                             &self.domain.owner,
                             &self.domain.sub_domain_name,
                             &issue.id.0,
-                            &bounty_mint.mint,
+                            &bounty.mint,
                         )
+                        .await?;
+                }
+
+                let bounty = match get_bounty(
+                    &self.domain.owner,
+                    &self.domain.sub_domain_name,
+                    &issue.id.0,
+                ) {
+                    Ok(bounty) => bounty,
+                    Err(err) => {
+                        log::info!(
+                            "Could not get issue for {} with id {}. Cause {}. Continuing to next issue...",
+                            issue.url,
+                            issue.id.0,
+                            err.to_string()
+                        );
+                        break;
+                    }
+                };
+                let comments: Vec<Comment> = issue_handler
+                    .list_comments(issue.number as u64)
+                    .per_page(150)
+                    .send()
+                    .await
+                    .map_err(|err| {
+                        SBError::CommentsNotFound("open issues".to_string(), err.to_string())
+                    })?
+                    .take_items();
+
+                let relayer_comments_iter = comments
+                    .iter()
+                    .filter(|comment| is_relayer_login(&comment.user.login).unwrap());
+
+                log::info!("[relayer] Try to post comments to issue {}", issue.url);
+                for comment in relayer_comments_iter.collect::<Vec<&Comment>>() {
+                    self.try_post_bounty_status(&gh, &issue.number, &issue.id.0, &bounty, &comment)
                         .await?;
                 }
             }
