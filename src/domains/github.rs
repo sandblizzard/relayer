@@ -171,12 +171,13 @@ impl Github {
         ))
     }
 
+    ///FIXME: don't post twice
     pub fn contains_bounty_status(&self, comment: &Comment, bounty_status: &str) -> bool {
         let comment_body = match &comment.body {
             Some(body) => body,
             None => return false,
         };
-        comment_body.contains(bounty_status)
+        bounty_status.contains(comment_body)
     }
 
     pub fn create_bounty_status_text(
@@ -195,12 +196,14 @@ impl Github {
         issue_number: &i64,
         issue_id: &u64,
         bounty: &bounty::state::Bounty,
-        comment: &Comment,
+        comments: &Vec<&Comment>,
     ) -> Result<(), SBError> {
         let bounty_status = self.create_bounty_status_text(bounty)?;
-        log::info!("Bounty status {} for {}", bounty_status, issue_number);
 
-        if self.contains_bounty_status(comment, &bounty_status) {
+        if comments
+            .iter()
+            .any(|comment| self.contains_bounty_status(comment, &bounty_status))
+        {
             return Ok(());
         } else {
             log::info!("Post bounty status {} for {}", bounty_status, issue_number);
@@ -429,23 +432,33 @@ impl Github {
                     };
 
                     // FIXME: don't throw error, match and log
-                    let bounty_wrapped = get_solvers(
+                    let bounty_wrapped = match get_solvers(
                         &issue.user.id.to_string(),
                         &comment_body,
                         &issue.id,
                         &bounty.mint,
                     )
                     .await
-                    .unwrap();
+                    {
+                        Ok(wrapped_bounty) => wrapped_bounty,
+                        Err(err) => {
+                            log::info!("{}", err.to_string());
+                            break;
+                        }
+                    };
 
-                    let updated_bounty = bounty_wrapped
+                    match bounty_wrapped
                         .try_complete_bounty(
                             &self.domain.owner,
                             &self.domain.sub_domain_name,
                             &issue.id.0,
                             &bounty.mint,
                         )
-                        .await?;
+                        .await
+                    {
+                        Ok(res) => (),
+                        Err(err) => log::info!("{}", err.to_string()),
+                    };
                 }
 
                 let bounty = match get_bounty(
@@ -479,10 +492,15 @@ impl Github {
                     .filter(|comment| is_relayer_login(&comment.user.login).unwrap());
 
                 log::info!("[relayer] Try to post comments to issue {}", issue.url);
-                for comment in relayer_comments_iter.collect::<Vec<&Comment>>() {
-                    self.try_post_bounty_status(&gh, &issue.number, &issue.id.0, &bounty, &comment)
-                        .await?;
-                }
+
+                self.try_post_bounty_status(
+                    &gh,
+                    &issue.number,
+                    &issue.id.0,
+                    &bounty,
+                    &relayer_comments_iter.collect::<Vec<&Comment>>(),
+                )
+                .await?;
             }
 
             // move to next issue
