@@ -3,6 +3,8 @@ use async_trait::async_trait;
 use std::{rc::Rc, result::Result, sync::Arc};
 use tokio::sync::Mutex;
 
+use crate::bounty_sdk::BountySdk;
+
 use super::{github::Github, utils::SBError};
 
 #[derive(Clone)]
@@ -37,11 +39,12 @@ impl Domain {
         };
     }
 
-    pub fn get_type(&self) -> Result<Box<dyn DomainHandler>, SBError> {
+    pub async fn get_type(&self, sdk: BountySdk) -> Result<Box<dyn DomainHandler>, SBError> {
         match self.bounty_type.as_str() {
-            "issue" => Ok(Box::new(Github {
-                domain: self.clone(),
-            })),
+            "issue" => {
+                let github = Github::new(&self, sdk).await?;
+                Ok(Box::new(github))
+            }
             _ => Err(SBError::UndefinedBountyType(format!(
                 "bounty_type = {} not defined",
                 self.bounty_type

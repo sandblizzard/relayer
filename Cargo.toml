@@ -27,3 +27,4 @@ base64 = "^0.21.0"
 actix-web = "4"
 actix-files = "0.6.2"
 bounty = {path="../rewards-v1/programs/bounty"}
+coingecko = "1.0.1"

@@ -100,6 +100,12 @@ pub enum SBError {
 
     #[error("{0} Could not get env key {1}. Cause {2}")]
     CouldNotGetEnvKey(String, String, String),
+
+    #[error("Failed to get {0}. Cause {1}")]
+    FailedToGetAccount(String, String),
+
+    #[error("{0} Need at least one solver ")]
+    NeedAtLeastOneSolver(String),
 }
 
 /// get_key_from_env

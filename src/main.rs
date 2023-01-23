@@ -1,4 +1,5 @@
-pub mod bounty_wrapper;
+pub mod bounty_proto;
+pub mod bounty_sdk;
 pub mod domains;
 pub mod external;
 pub mod jobs;
@@ -12,6 +13,7 @@ use anchor_client::{
     Cluster,
 };
 use bounty;
+use bounty_sdk::*;
 use domains::{
     utils::{get_key_from_env, SBError},
     *,
@@ -62,9 +64,10 @@ async fn main() -> std::io::Result<()> {
     loop {
         // index domains for bounties
         let search_domains = try_fetch_indexable_domains().unwrap();
+        let bounty_sdk = BountySdk::new().unwrap();
         for domain in &search_domains {
             log::info!("[relayer] try index: {}", domain.name);
-            let domain_type = domain.get_type().unwrap();
+            let domain_type = domain.get_type(bounty_sdk).await.unwrap();
             match domain_type.handle().await {
                 Ok(_) => log::info!(
                     "[relayer] successfully handled domain={}",

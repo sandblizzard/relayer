@@ -990,6 +990,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "coingecko"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b24c2d346c689c0b8a27d4c921a35d8cac68cc266130bc82ba879155ca828da0"
+dependencies = [
+ "chrono",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "console"
 version = "0.15.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3006,6 +3019,7 @@ dependencies = [
  "async-trait",
  "base64 0.21.0",
  "bounty",
+ "coingecko",
  "dotenv",
  "env_logger",
  "jsonwebtoken",
