@@ -3,6 +3,7 @@ use std::{
     rc::{self, Rc},
     result::Result,
     sync::Arc,
+    thread,
 };
 
 use super::{
@@ -82,7 +83,7 @@ pub async fn get_connection() -> Result<Octocrab, SBError> {
 
 impl Github {
     /// Create new Github interface
-    pub async fn new(domain: &Domain, bounty_sdk: BountySdk) -> Result<Github, SBError> {
+    pub async fn new(domain: &Domain) -> Result<Github, SBError> {
         let github_client = get_connection().await?;
         Ok(Github {
             domain: domain.clone(),
@@ -105,7 +106,9 @@ impl Github {
             &issue.user.id.to_string(),
             issue_body,
             &issue.id.0,
-        ) {
+        )
+        .await
+        {
             Ok(bounty) => bounty,
             Err(err) => return Err(SBError::FailedToFindBounty(err.to_string())),
         };
@@ -182,6 +185,8 @@ impl Github {
         issue_id: &u64,
         issue_number: &i64,
         bounty_amount: &f64,
+        mint: &str,
+        token_name: &str,
     ) -> Result<String, SBError> {
         let sb_bounty_domain = get_key_from_env("SANDBLIZZARD_URL")?;
 
@@ -190,8 +195,8 @@ impl Github {
             self.domain.owner, self.domain.sub_domain_name, issue_number
         );
         Ok(format!(
-            "Create bounty by signing: [Transaction]({}/create_bounty?referrer={}&domain={}&subDomain={}&id={}&bountyAmount={})",
-            sb_bounty_domain,referrer, self.domain.owner, self.domain.sub_domain_name, issue_id,bounty_amount
+            "Create bounty by signing: [Transaction]({}/create_bounty?referrer={}&domain={}&subDomain={}&id={}&bountyAmount={}&mint={}&token={})",
+            sb_bounty_domain,referrer, self.domain.owner, self.domain.sub_domain_name, issue_id,bounty_amount,mint,token_name
         ))
     }
 
@@ -280,6 +285,8 @@ impl Github {
         issue_number: &i64,
         issue_id: &u64,
         bounty_amount: &f64,
+        mint: &str,
+        token_name: &str,
     ) -> Result<(), SBError> {
         log::info!(
             "[relayer] try to create signing link for issue id: {} ",
@@ -289,7 +296,7 @@ impl Github {
             .issues(&self.domain.owner, &self.domain.sub_domain_name)
             .create_comment(
                 *issue_number,
-                self.get_signing_link(issue_id, issue_number, bounty_amount)?,
+                self.get_signing_link(issue_id, issue_number, bounty_amount, mint, token_name)?,
             )
             .await
         {
@@ -314,11 +321,13 @@ impl Github {
             issue.state.eq("open"),
         );
 
-        match BountySdk::new()?.get_bounty(
+        let bounty = BountySdk::new()?.get_bounty(
             &self.domain.owner,
             &self.domain.sub_domain_name,
             &issue.id.0,
-        ) {
+        );
+
+        match bounty {
             Ok(bounty) => (),
             Err(err) => {
                 // if issue is open, but bounty does not exist -> check if bounty is proposed
@@ -328,7 +337,8 @@ impl Github {
                     err.to_string()
                 );
                 // get bounty if proposed in issue
-                let bounty_proposed_in_issue = self.get_bounty_from_issue(&issue).await?;
+                let bounty_proposed_in_issue =
+                    self.get_bounty_from_issue(&issue.clone()).await.unwrap();
 
                 // Check the status of the bounty
                 // -> If there is no signing link -> look for bounty -> post signing link
@@ -360,6 +370,8 @@ impl Github {
                         &issue.number,
                         &issue.id,
                         &bounty_proposed_in_issue.amount.unwrap(),
+                        &bounty_proposed_in_issue.token_mint.unwrap(),
+                        &bounty_proposed_in_issue.token_name.unwrap(),
                     )
                     .await?;
                 }
@@ -411,7 +423,7 @@ impl Github {
             &issue.id.0,
             &solvers,
             &bounty.mint,
-        );
+        )?;
         Ok(())
     }
 
@@ -452,6 +464,48 @@ impl Github {
         Ok(())
     }
 
+    pub async fn handle_issue(&self, issue: &Issue) -> Result<(), SBError> {
+        // get Status of Issue
+        // 1. Open - try create bounty
+        // 2. Closed -
+        //  - pay out bounty if mentioned users
+        //  - close bounty if no one mentioned
+        log::info!("[relayer] issue {}, issue state {}", issue.id, issue.state,);
+        if issue.state.eq("open") {
+            // -> If open -> try to complete bounty
+            match self.handle_open_issue(&issue).await {
+                Ok(res) => res,
+                Err(err) => {
+                    log::warn!(
+                        "Could not handle open issue for {}. Cause {}",
+                        issue.url,
+                        err
+                    );
+                }
+            };
+        } else {
+            // -> If closed -> try to complete bounty
+            match self.handle_closed_issue(&issue).await {
+                Ok(res) => res,
+                Err(err) => {
+                    log::warn!(
+                        "Could not handle closed issue for {}. Cause {}",
+                        issue.url,
+                        err
+                    );
+                }
+            }
+        }
+
+        match self.update_issue_status(&issue).await {
+            Ok(res) => res,
+            Err(err) => {
+                log::warn!("Could not update issue status {}. Cause {}", issue.url, err);
+            }
+        }
+        Ok(())
+    }
+
     /// issues
     ///
     /// Handles the github issues
@@ -486,6 +540,8 @@ impl Github {
                 .collect::<Vec<IssueId>>()
         );
 
+        let shared_self = Arc::new(self);
+        let self_copy = shared_self.clone();
         loop {
             for issue in &issues.take_items() {
                 // get Status of Issue
@@ -493,39 +549,8 @@ impl Github {
                 // 2. Closed -
                 //  - pay out bounty if mentioned users
                 //  - close bounty if no one mentioned
-                log::info!("[relayer] issue {}, issue state {}", issue.id, issue.state,);
-                if issue.state.eq("open") {
-                    // -> If open -> try to complete bounty
-                    match self.handle_open_issue(&issue).await {
-                        Ok(res) => res,
-                        Err(err) => {
-                            log::warn!(
-                                "Could not handle open issue for {}. Cause {}",
-                                issue.url,
-                                err
-                            );
-                        }
-                    };
-                } else {
-                    // -> If closed -> try to complete bounty
-                    match self.handle_closed_issue(&issue).await {
-                        Ok(res) => res,
-                        Err(err) => {
-                            log::warn!(
-                                "Could not handle closed issue for {}. Cause {}",
-                                issue.url,
-                                err
-                            );
-                        }
-                    }
-                }
-
-                match self.update_issue_status(&issue).await {
-                    Ok(res) => res,
-                    Err(err) => {
-                        log::warn!("Could not update issue status {}. Cause {}", issue.url, err);
-                    }
-                }
+                let local_self = &self_copy;
+                local_self.handle_issue(issue).await.unwrap();
             }
 
             // move to next issue

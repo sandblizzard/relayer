@@ -106,6 +106,12 @@ pub enum SBError {
 
     #[error("{0} Need at least one solver ")]
     NeedAtLeastOneSolver(String),
+
+    #[error("{0} Failed to parse token for issue {1} ")]
+    FailedToParseBounty(String, String),
+
+    #[error("{0} Failed fetch token information from {1} for {2}. Cause: {3} ")]
+    FailedToFetchTokenInformation(String, String, String, String),
 }
 
 /// get_key_from_env

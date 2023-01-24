@@ -67,7 +67,7 @@ async fn main() -> std::io::Result<()> {
         let bounty_sdk = BountySdk::new().unwrap();
         for domain in &search_domains {
             log::info!("[relayer] try index: {}", domain.name);
-            let domain_type = domain.get_type(bounty_sdk).await.unwrap();
+            let domain_type = domain.get_type().await.unwrap();
             match domain_type.handle().await {
                 Ok(_) => log::info!(
                     "[relayer] successfully handled domain={}",

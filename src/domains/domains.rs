@@ -39,10 +39,10 @@ impl Domain {
         };
     }
 
-    pub async fn get_type(&self, sdk: BountySdk) -> Result<Box<dyn DomainHandler>, SBError> {
+    pub async fn get_type(&self) -> Result<Box<dyn DomainHandler>, SBError> {
         match self.bounty_type.as_str() {
             "issue" => {
-                let github = Github::new(&self, sdk).await?;
+                let github = Github::new(&self).await?;
                 Ok(Box::new(github))
             }
             _ => Err(SBError::UndefinedBountyType(format!(
